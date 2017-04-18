@@ -1,0 +1,410 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+
+  KongGatewayCIDR:
+    Description: The CIDR IPv4 address range to which permission will be given to access Kong Gateway
+    Type: String
+    Default: 0.0.0.0/0
+  KongAdminCIDR:
+    Description: The CIDR IPv4 address range to which permission will be given to access Konga and Kong Admin APIs
+    Type: String
+    Default: 0.0.0.0/0
+
+  DatabaseUsername:
+    Type: String
+    Default: kong
+    Description: Kong Database username
+    MinLength: 1
+    MaxLength: 16
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9]*$"
+    ConstraintDescription: Must begin with a letter and contain only alphanumeric characters
+  DatabasePassword:
+    Type: String
+    Default: kong1234
+    Description: Kong Database password
+    MinLength: 8
+    ConstraintDescription: Must be at least 8 characters
+    NoEcho: true
+  DatabaseClass:
+    Type: String
+    Default: db.t2.micro
+    AllowedValues:
+      - db.t2.micro
+      - db.t2.small
+      - db.m4.large
+      - db.m4.xlarge
+      - db.r3.large
+    ConstraintDescription: Must select a valid database instance type
+  DatabaseAllocatedStorage:
+    Type: Number
+    Default: 5
+    Description: The size of the database (GB)
+    MinValue: 5
+    MaxValue: 6000
+    ConstraintDescription: Must be greater than 5
+
+Resources:
+#Kong Postgres Database
+  Database:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: kong
+      AllocatedStorage: !Ref DatabaseAllocatedStorage
+      DBInstanceClass: !Ref DatabaseClass
+      Engine: postgres
+      EngineVersion: 9.5
+      MasterUsername: !Ref DatabaseUsername
+      MasterUserPassword: !Ref DatabasePassword
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-Kong-Postgres
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Database Private Subnets
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PrivateSubnet1"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PrivateSubnet2"
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Kong Database security group allowing access to 5432 port within VPC
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPC"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp:
+            Fn::ImportValue: !Sub "${EnvironmentName}-VpcCIDR"
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-Kong-Database
+
+# Konga
+  KongaService:
+    DependsOn: KongaALBListenerRule
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster:
+        Fn::ImportValue: !Sub "${EnvironmentName}-ECSCluster"
+      DesiredCount: 1
+      TaskDefinition:
+        Ref: KongaTaskDefinition
+      LoadBalancers:
+      - ContainerName: konga
+        ContainerPort: 1337
+        TargetGroupArn:
+          Ref: KongaTG
+      Role:
+        Ref: ECSServiceRole
+  ECSServicePolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "ecs-service"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: ['*']
+            Resource: '*'
+      Roles:
+      - Ref: ECSServiceRole
+  ECSServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ecs.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+  KongaTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: konga
+      ContainerDefinitions:
+      - Name: konga
+        Cpu: '128'
+        Essential: 'true'
+        Image: 'pantsel/konga:0.6.5'
+        Memory: '256'
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group:
+              Ref: CloudwatchLogsGroup
+            awslogs-region:
+              Ref: AWS::Region
+            awslogs-stream-prefix: konga
+        PortMappings:
+        - ContainerPort: 1337
+  CloudwatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Sub: "ECSLogGroup-${AWS::StackName}"
+      RetentionInDays: 14
+  KongaALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: Konga-ALB
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '30'
+      Subnets:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PublicSubnet1"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PublicSubnet2"
+      SecurityGroups:
+        - !Ref KongaALBSecurityGroup
+  KongaALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group attached to Konga ALB
+      VpcId:
+        Fn::ImportValue:
+           Fn::Sub:  "${EnvironmentName}-VPC"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: !Ref KongAdminCIDR
+  KongaALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: KongaALB
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: KongaTG
+      LoadBalancerArn:
+        Ref: KongaALB
+      Port: 80
+      Protocol: HTTP
+  KongaALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn: KongaALBListener
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: KongaTG
+      Conditions:
+      - Field: path-pattern
+        Values: [/]
+      ListenerArn:
+        Ref: KongaALBListener
+      Priority: 1
+  KongaTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: KongaALB
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: KongaTG
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId:
+        Fn::ImportValue:
+         !Sub "${EnvironmentName}-VPC"
+
+#Kong
+  KongService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster:
+        Fn::ImportValue: !Sub "${EnvironmentName}-ECSCluster"
+      DesiredCount: 1
+      TaskDefinition:
+        Ref: KongTaskDefinition
+      LoadBalancers:
+        - ContainerName: kong
+          ContainerPort: 8000
+          TargetGroupArn: !Ref KongGatewayTG
+      Role:
+        Ref: ECSServiceRole
+  KongTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: kong
+      ContainerDefinitions:
+      - Name: kong
+        Cpu: 256
+        Essential: true
+        Image: alexforever86/kong
+        Memory: 512
+        PortMappings:
+        - ContainerPort: 8443
+          HostPort: 8443
+        - ContainerPort: 8000
+          HostPort: 8000
+        - ContainerPort: 7946
+          HostPort: 7946
+        - ContainerPort: 8001
+          HostPort: 8001
+        - ContainerPort: 7946
+          HostPort: 7946
+          Protocol: 'udp'
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group:
+              Ref: CloudwatchLogsGroup
+            awslogs-region:
+              Ref: AWS::Region
+            awslogs-stream-prefix: kong
+        Environment:
+        - Name: 'KONG_DATABASE'
+          Value: 'postgres'
+        - Name: 'KONG_PG_HOST'
+          Value: !GetAtt Database.Endpoint.Address
+        - Name: 'KONG_PG_PASSWORD'
+          Value: !Ref DatabasePassword
+        - Name: 'KONG_PG_USER'
+          Value: !Ref DatabaseUsername
+  KongALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: KongALB
+      Scheme: internet-facing
+      Subnets:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PublicSubnet1"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PublicSubnet2"
+      SecurityGroups:
+        - !Ref KongALBSecurityGroup
+  KongGatewayALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: KongALB
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: KongGatewayTG
+      LoadBalancerArn:
+        Ref: KongALB
+      Port: '80'
+      Protocol: HTTP
+  KongGatewayALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn: KongGatewayALBListener
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: KongGatewayTG
+      Conditions:
+      - Field: path-pattern
+        Values: [/]
+      ListenerArn:
+        Ref: KongGatewayALBListener
+      Priority: 1
+  KongGatewayTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: KongALB
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPort: 8001
+      HealthCheckPath: /status
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: KongGatewayTG
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId:
+        Fn::ImportValue:
+         !Sub "${EnvironmentName}-VPC"
+
+  KongAdminALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: KongALB
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: KongAdminTG
+      LoadBalancerArn:
+        Ref: KongALB
+      Port: 90
+      Protocol: HTTP
+  KongAdminALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn: KongAdminALBListener
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: KongAdminTG
+      Conditions:
+      - Field: path-pattern
+        Values: [/]
+      ListenerArn:
+        Ref: KongAdminALBListener
+      Priority: 1
+  KongAdminTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: KongALB
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: KongAdminTG
+      Port: 8001
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId:
+        Fn::ImportValue:
+         !Sub "${EnvironmentName}-VPC"
+
+  KongALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group attached to Kong ALB
+      VpcId:
+        Fn::ImportValue:
+           Fn::Sub:  "${EnvironmentName}-VPC"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: !Ref KongGatewayCIDR
+        - IpProtocol: tcp
+          FromPort: '90'
+          ToPort: '90'
+          CidrIp: !Ref KongAdminCIDR
+
+Outputs:
+  KongGatewayURL:
+    Description: Kong Gateway URL
+    Value: !Sub
+      - http://${KongGatewayDomain}
+      - { KongGatewayDomain: !GetAtt KongALB.DNSName }
+  KongAdminURL:
+    Description: Kong Admin URL
+    Value: !Sub
+      - http://${KongAdminDomain}:90
+      - { KongAdminDomain: !GetAtt KongALB.DNSName }
+  KongAdminTargetGroupArns:
+    Description: Kong Admin Target Group Arns
+    Value: !Ref KongAdminTG
+  KongaURL:
+    Description: Konga URL
+    Value: !Sub
+      - http://${KongaURL}
+      - { KongaURL: !GetAtt KongaALB.DNSName }
+
