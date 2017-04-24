@@ -170,7 +170,7 @@ Resources:
   KongaALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: Konga-ALB
+      Name: !Sub '${EnvironmentName}-Konga-ALB'
       Scheme: internet-facing
       LoadBalancerAttributes:
         - Key: idle_timeout.timeout_seconds
@@ -227,7 +227,7 @@ Resources:
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
-      Name: KongaTG
+      Name: !Sub '${EnvironmentName}-KongaTG'
       Port: 80
       Protocol: HTTP
       UnhealthyThresholdCount: 2
@@ -294,7 +294,7 @@ Resources:
   KongGatewayALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: KongGatewayALB
+      Name: !Sub '${EnvironmentName}-KongGatewayALB'
       Scheme: internet-facing
       Subnets:
         - Fn::ImportValue: !Sub "${EnvironmentName}-PublicSubnet1"
@@ -349,7 +349,7 @@ Resources:
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
-      Name: KongGatewayTG
+      Name: !Sub '${EnvironmentName}-KongGatewayTG'
       Port: 80
       Protocol: HTTP
       UnhealthyThresholdCount: 2
@@ -417,7 +417,7 @@ Resources:
   KongAdminALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: KongAdminALB
+      Name: !Sub '${EnvironmentName}-KongAdminALB'
       Scheme: internet-facing
       Subnets:
         - Fn::ImportValue: !Sub "${EnvironmentName}-PublicSubnet1"
@@ -471,7 +471,7 @@ Resources:
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
-      Name: KongAdminTG
+      Name: !Sub '${EnvironmentName}-KongAdminTG'
       Port: 8001
       Protocol: HTTP
       UnhealthyThresholdCount: 2
