@@ -34,5 +34,3 @@
 - Provide the requested parameters in the AWS CloudFormation console.
 - Important - Click the checkbox "I acknowledge that AWS CloudFormation might create IAM resources with custom names." under Capabilities section.
 - Review the information for the stack. When you're satisfied with the settings, click 'Create'.
-- Attach the Kong Admin Target Group with the Auto-scaling group for the ECS Cluster from AWS CLI
-    `aws autoscaling attach-load-balancer-target-groups --auto-scaling-group-name "my-asg" --target-group-arns "my-targetgroup-arn"`
