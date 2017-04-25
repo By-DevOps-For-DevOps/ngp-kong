@@ -12,6 +12,9 @@ Parameters:
     Description: The CIDR IPv4 address range to which permission will be given to access Konga and Kong Admin APIs
     Type: String
     Default: 0.0.0.0/0
+  CertificateArn:
+    Description: The ARN of the SSL server certificate
+    Type: String
 
   DatabaseUsername:
     Type: String
@@ -246,7 +249,7 @@ Resources:
         Ref: KongGatewayTaskDefinition
       LoadBalancers:
         - ContainerName: kong-gateway
-          ContainerPort: 8000
+          ContainerPort: 8443
           TargetGroupArn: !Ref KongGatewayTG
       Role:
         Ref: ECSServiceRole
@@ -310,8 +313,8 @@ Resources:
            Fn::Sub:  "${EnvironmentName}-VPC"
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: '80'
-          ToPort: '80'
+          FromPort: '443'
+          ToPort: '443'
           CidrIp: !Ref KongGatewayCIDR
   KongGatewayALBListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -323,8 +326,11 @@ Resources:
           Ref: KongGatewayTG
       LoadBalancerArn:
         Ref: KongGatewayALB
-      Port: '80'
-      Protocol: HTTP
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-2015-05
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
   KongGatewayALBListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
     DependsOn: KongGatewayALBListener
@@ -350,8 +356,8 @@ Resources:
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
       Name: !Sub '${EnvironmentName}-KongGatewayTG'
-      Port: 80
-      Protocol: HTTP
+      Port: 443
+      Protocol: HTTPS
       UnhealthyThresholdCount: 2
       VpcId:
         Fn::ImportValue:
